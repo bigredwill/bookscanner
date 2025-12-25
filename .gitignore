@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Capture Data - All scan sessions and images
+captures/
+*.jpg
+*.jpeg
+*.png
+*.cr3
+*.raw
+*.nef
+*.dng
+
+# Temporary files
+tmp*.jpg
+opt-*.jpg
+
+# Test directories
+test/
+asdf/
+
+# Logs
+*.log
+*.txt
+my-logfile.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+scan_metadata.json

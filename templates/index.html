@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Book Scanner</title>
+        <link rel="stylesheet" href="/static/css/style.css" />
+    </head>
+    <body>
+        <div class="header">
+            <div class="title">Scanner Status</div>
+
+            <div class="session-info">
+                <strong>Current Session:</strong>
+                <span id="session-name">-</span>
+                <button onclick="toggleSessionBrowser()" class="small-btn">
+                    Browse Sessions
+                </button>
+            </div>
+
+            <div class="session-metadata" id="session-metadata"></div>
+
+            <div class="camera-info">
+                🎥 Left: <span id="left-port">-</span>
+            </div>
+            <div class="camera-serial" id="left-serial">Serial: -</div>
+            <div class="camera-info">
+                🎥 Right: <span id="right-port">-</span>
+            </div>
+            <div class="camera-serial" id="right-serial">Serial: -</div>
+            <button onclick="querySerials()">Refresh Serials</button>
+            <div class="status">
+                Images captured: <span id="image-count">0</span>
+            </div>
+            <div class="status" id="status-text">Loading...</div>
+        </div>
+
+        <div class="session-browser" id="session-browser" style="display: none">
+            <div class="session-browser-header">
+                <h2>Browse Sessions</h2>
+                <button onclick="toggleSessionBrowser()">Close</button>
+            </div>
+            <div class="session-list" id="session-list">Loading...</div>
+        </div>
+
+        <div class="gallery" id="gallery"></div>
+
+        <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+        <script src="/static/js/scanner.js"></script>
+    </body>
+</html>
