@@ -168,7 +168,25 @@ button.small-btn {
 }
 
 .fileinfo {
-    font-size: 12px;
+    font-size: 11px;
     color: #666;
     margin-top: 8px;
+    line-height: 1.6;
+}
+
+.fileinfo .meta-row {
+    margin: 3px 0;
+}
+
+.fileinfo .meta-label {
+    font-weight: bold;
+    color: #444;
+}
+
+.fileinfo .exif-data {
+    font-size: 10px;
+    color: #888;
+    margin-top: 5px;
+    padding-top: 5px;
+    border-top: 1px solid #eee;
 }

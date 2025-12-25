@@ -5,6 +5,18 @@ let currentViewingSession = null; // null means viewing current session
 // Initialize Socket.IO connection
 const socket = io();
 
+// Add keyboard listener for 'b' key
+document.addEventListener("keydown", function (event) {
+  if (event.key === "b" || event.key === "B") {
+    triggerCapture();
+  }
+});
+
+function triggerCapture() {
+  console.log("Triggering capture from webapp...");
+  socket.emit("trigger_capture");
+}
+
 socket.on("connect", function () {
   console.log("WebSocket connected");
 });
@@ -26,16 +38,42 @@ socket.on("gallery_update", function (data) {
     let gallery = document.getElementById("gallery");
     let galleryHTML = "";
     for (let img of data.images.slice().reverse()) {
-      galleryHTML += `
-            <div class="image-item">
-                <img src="/img/${img.filename}" alt="${img.filename}">
-                <div class="fileinfo">${img.filename}<br>${img.size}</div>
-            </div>`;
+      galleryHTML += buildImageHTML(img, "");
     }
     gallery.innerHTML = galleryHTML;
     previousImageCount = data.image_count;
   }
 });
+
+function buildImageHTML(img, sessionPrefix) {
+  let exifHTML = "";
+
+  if (img.width && img.height) {
+    exifHTML += `<div class="meta-row"><span class="meta-label">Resolution:</span> ${img.width}×${img.height} (${img.megapixels})</div>`;
+  }
+  if (img.camera_model) {
+    exifHTML += `<div class="meta-row"><span class="meta-label">Camera:</span> ${img.camera_model}</div>`;
+  }
+
+  let settings = [];
+  if (img.iso) settings.push(img.iso);
+  if (img.shutter_speed) settings.push(img.shutter_speed);
+  if (img.aperture) settings.push(img.aperture);
+  if (img.focal_length) settings.push(img.focal_length);
+
+  if (settings.length > 0) {
+    exifHTML += `<div class="exif-data">${settings.join(" • ")}</div>`;
+  }
+
+  return `
+      <div class="image-item">
+          <img src="${sessionPrefix}/img/${img.filename}" alt="${img.filename}">
+          <div class="fileinfo">
+              <div class="meta-row"><strong>${img.filename}</strong> (${img.size})</div>
+              ${exifHTML}
+          </div>
+      </div>`;
+}
 
 function updateGallery() {
   fetch("/api/gallery-data")
@@ -73,11 +111,7 @@ function updateGallery() {
         let gallery = document.getElementById("gallery");
         let galleryHTML = "";
         for (let img of data.images.slice().reverse()) {
-          galleryHTML += `
-                    <div class="image-item">
-                        <img src="/img/${img.filename}" alt="${img.filename}">
-                        <div class="fileinfo">${img.filename}<br>${img.size}</div>
-                    </div>`;
+          galleryHTML += buildImageHTML(img, "");
         }
         gallery.innerHTML = galleryHTML;
         document.getElementById("image-count").textContent = data.image_count;
@@ -142,11 +176,7 @@ function viewSession(sessionName) {
 
       // Reverse the array to show most recent first
       for (let img of data.images.slice().reverse()) {
-        galleryHTML += `
-                <div class="image-item">
-                    <img src="/img/${sessionName}/${img.filename}" alt="${img.filename}">
-                    <div class="fileinfo">${img.filename}<br>${img.size}</div>
-                </div>`;
+        galleryHTML += buildImageHTML(img, `/${sessionName}`);
       }
 
       gallery.innerHTML = galleryHTML;

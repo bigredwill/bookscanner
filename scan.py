@@ -16,6 +16,8 @@ from threading import Thread
 
 from flask import Flask, render_template, send_file
 from flask_socketio import SocketIO, emit
+from PIL import Image
+from PIL.ExifTags import TAGS
 
 # Get the directory where scan.py is located (for templates/static)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -48,6 +50,9 @@ app = Flask(
 # Initialize SocketIO
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
+# Global state for web-triggered captures
+scanner_state["capture_requested"] = False
+
 
 def emit_status_update(message, color=None):
     """Emit a status update via WebSocket."""
@@ -65,8 +70,8 @@ def emit_gallery_update():
     update_image_list()
     images_data = []
     for img in sorted(scanner_state["images"]):
-        size = get_file_size(img)
-        images_data.append({"filename": img, "size": size})
+        img_metadata = get_image_metadata(img)
+        images_data.append(img_metadata)
 
     socketio.emit(
         "gallery_update",
@@ -176,8 +181,8 @@ def api_gallery_data():
     """Return gallery data as JSON."""
     images_data = []
     for img in sorted(scanner_state["images"]):
-        size = get_file_size(img)
-        images_data.append({"filename": img, "size": size})
+        img_metadata = get_image_metadata(img)
+        images_data.append(img_metadata)
 
     return json.dumps(
         {
@@ -243,11 +248,18 @@ def api_session_images(session_name):
     image_files = sorted(glob.glob(os.path.join(session_path, "img*.jpg")))
 
     for img_path in image_files:
-        img_name = os.path.basename(img_path)
-        size = get_file_size(img_path)
-        images_data.append({"filename": img_name, "size": size})
+        img_metadata = get_image_metadata(img_path)
+        images_data.append(img_metadata)
 
     return json.dumps({"images": images_data, "session_name": session_name})
+
+
+@socketio.on("trigger_capture")
+def handle_capture_trigger():
+    """Handle capture request from web interface."""
+    scanner_state["capture_requested"] = True
+    emit_status_update("Capture requested from web...", "ff9")
+    return {"status": "ok"}
 
 
 @app.route("/")
@@ -268,24 +280,111 @@ def get_file_size(filename):
     return "N/A"
 
 
+def get_image_metadata(image_path):
+    """Extract detailed metadata from image including EXIF data."""
+    metadata = {
+        "filename": os.path.basename(image_path),
+        "size": get_file_size(image_path),
+        "width": None,
+        "height": None,
+        "camera_make": None,
+        "camera_model": None,
+        "iso": None,
+        "shutter_speed": None,
+        "aperture": None,
+        "focal_length": None,
+        "date_taken": None,
+    }
+
+    try:
+        with Image.open(image_path) as img:
+            # Get basic dimensions
+            metadata["width"] = img.width
+            metadata["height"] = img.height
+            metadata["megapixels"] = f"{(img.width * img.height) / 1000000:.1f} MP"
+
+            # Extract EXIF data
+            exif_data = img.getexif()
+            if exif_data:
+                for tag_id, value in exif_data.items():
+                    tag = TAGS.get(tag_id, tag_id)
+
+                    if tag == "Make":
+                        metadata["camera_make"] = str(value).strip()
+                    elif tag == "Model":
+                        metadata["camera_model"] = str(value).strip()
+                    elif tag == "ISOSpeedRatings":
+                        metadata["iso"] = f"ISO {value}"
+                    elif tag == "ExposureTime":
+                        # Convert to fraction
+                        if isinstance(value, tuple):
+                            metadata["shutter_speed"] = f"{value[0]}/{value[1]}s"
+                        else:
+                            metadata["shutter_speed"] = f"{value}s"
+                    elif tag == "FNumber":
+                        if isinstance(value, tuple):
+                            f_num = value[0] / value[1]
+                            metadata["aperture"] = f"f/{f_num:.1f}"
+                        else:
+                            metadata["aperture"] = f"f/{value:.1f}"
+                    elif tag == "FocalLength":
+                        if isinstance(value, tuple):
+                            fl = value[0] / value[1]
+                            metadata["focal_length"] = f"{fl:.0f}mm"
+                        else:
+                            metadata["focal_length"] = f"{value:.0f}mm"
+                    elif tag == "DateTimeOriginal" or tag == "DateTime":
+                        if not metadata["date_taken"]:
+                            metadata["date_taken"] = str(value)
+    except Exception as e:
+        print(f"Error extracting metadata from {image_path}: {e}")
+
+    return metadata
+
+
+def get_camera_info(port):
+    """Get camera model and other info from gphoto2."""
+    info = {"serial": None, "model": None, "manufacturer": None}
+
+    try:
+        # Get camera summary which contains model info
+        summary = subprocess.check_output(
+            [GPHOTO, f"--port={port}", "--summary"], timeout=3, stderr=subprocess.STDOUT
+        ).decode()
+
+        # Extract model
+        model_match = re.search(r"Model:\s+(.+)", summary)
+        if model_match:
+            info["model"] = model_match.group(1).strip()
+
+        # Extract manufacturer
+        mfr_match = re.search(r"Manufacturer:\s+(.+)", summary)
+        if mfr_match:
+            info["manufacturer"] = mfr_match.group(1).strip()
+
+        # Extract serial
+        serial_match = re.search(r"Serial Number:\s+(.+)", summary)
+        if serial_match:
+            info["serial"] = serial_match.group(1).strip()
+
+    except Exception as e:
+        print(f"DEBUG: Error getting camera info for {port}: {e}")
+
+    return info
+
+
 def query_single_port_serial(port):
     """Query serial number for a single port."""
     try:
-        serial_output = subprocess.check_output(
-            [GPHOTO, f"--port={port}", "--get-config=serialnumber"],
-            timeout=2,
-            stderr=subprocess.STDOUT,
-        ).decode()
-        serial_match = re.search(r"Current:\s+(.+)", serial_output)
-        if serial_match:
-            serial = serial_match.group(1).strip()
-            return (port, serial)
+        camera_info = get_camera_info(port)
+        if camera_info["serial"]:
+            return (port, camera_info["serial"], camera_info)
         else:
-            print(f"DEBUG: No serial found in output for {port}")
-            return (port, None)
+            print(f"DEBUG: No serial found for {port}")
+            return (port, None, camera_info)
     except Exception as e:
         print(f"DEBUG: Error querying {port}: {e}")
-        return (port, None)
+        return (port, None, {})
 
 
 def get_all_camera_serials():
@@ -299,6 +398,7 @@ def get_all_camera_serials():
         print(f"DEBUG: Found ports: {ports}")
 
         port_serial_map = {}
+        port_info_map = {}  # Store full camera info
 
         # Query all ports in parallel
         with ThreadPoolExecutor(max_workers=len(ports)) as executor:
@@ -306,11 +406,16 @@ def get_all_camera_serials():
                 executor.submit(query_single_port_serial, port): port for port in ports
             }
             for future in as_completed(future_to_port):
-                port, serial = future.result()
+                port, serial, camera_info = future.result()
                 if serial:
                     print(f"DEBUG: {port} -> {serial}")
+                    if camera_info.get("model"):
+                        print(f"DEBUG: Camera model: {camera_info['model']}")
                     port_serial_map[port] = serial
+                    port_info_map[port] = camera_info
 
+        # Store camera info globally for later use
+        scanner_state["camera_info_map"] = port_info_map
         return port_serial_map
     except Exception as e:
         print(f"DEBUG: Error in get_all_camera_serials: {e}")
@@ -451,10 +556,18 @@ if __name__ == "__main__":
     os.chdir(session_dir)
     print(f"✓ Working directory: {os.getcwd()}\n")
 
-    # Kill PTPCamera on Mac
+    # Kill processes that interfere with camera access
     devnull = open(os.devnull, "w")
+    # Mac
     subprocess.call(["killall", "PTPCamera"], stderr=devnull)
+    # Linux - GVFS processes
+    subprocess.call(["killall", "gvfs-gphoto2-volume-monitor"], stderr=devnull)
+    subprocess.call(["killall", "gvfs-mtp-volume-monitor"], stderr=devnull)
+    subprocess.call(["killall", "gvfsd-gphoto2"], stderr=devnull)
     devnull.close()
+
+    # Give processes time to die
+    time.sleep(0.5)
 
     # Start web server in background
     server_thread = Thread(target=start_web_server, daemon=True)
@@ -513,6 +626,11 @@ if __name__ == "__main__":
     scanner_state["status_text"] = "Ready to scan"
 
     # Save metadata to JSON file
+    # Get camera info from the stored map
+    camera_info_map = scanner_state.get("camera_info_map", {})
+    left_cam_info = camera_info_map.get(left_cam, {})
+    right_cam_info = camera_info_map.get(right_cam, {})
+
     metadata = {
         "session_name": session_name,
         "identifier": identifier,
@@ -521,8 +639,18 @@ if __name__ == "__main__":
         "scan_date": scan_start_time.strftime("%Y-%m-%d"),
         "scan_time": scan_start_time.strftime("%H:%M:%S"),
         "scan_start_timestamp": scan_start_time.isoformat(),
-        "left_camera": {"port": left_cam, "serial": left_serial},
-        "right_camera": {"port": right_cam, "serial": right_serial},
+        "left_camera": {
+            "port": left_cam,
+            "serial": left_serial,
+            "model": left_cam_info.get("model"),
+            "manufacturer": left_cam_info.get("manufacturer"),
+        },
+        "right_camera": {
+            "port": right_cam,
+            "serial": right_serial,
+            "model": right_cam_info.get("model"),
+            "manufacturer": right_cam_info.get("manufacturer"),
+        },
     }
 
     metadata_file = "scan_metadata.json"
@@ -551,22 +679,28 @@ if __name__ == "__main__":
     )
 
     while True:
-        # Non-blocking input - check for keypresses
-        ch = getch_nonblocking()
+        # Check for web-triggered capture
+        if scanner_state["capture_requested"]:
+            scanner_state["capture_requested"] = False
+            x = CAPTURE_KEY  # Simulate 'b' press from web
+            print(f"[Web trigger: {x}]")
+        else:
+            # Non-blocking input - check for keypresses
+            ch = getch_nonblocking()
 
-        if ch is None:
-            # No input, continue loop
-            time.sleep(0.05)
-            continue
+            if ch is None:
+                # No input, continue loop
+                time.sleep(0.05)
+                continue
 
-        # Handle special characters
-        if ch == "\r" or ch == "\n":
-            ch = ""  # Treat Enter as empty string
-        elif ch == "\x03":  # Ctrl+C
-            print("\n\nInterrupted by user")
-            break
+            # Handle special characters
+            if ch == "\r" or ch == "\n":
+                ch = ""  # Treat Enter as empty string
+            elif ch == "\x03":  # Ctrl+C
+                print("\n\nInterrupted by user")
+                break
 
-        x = ch
+            x = ch
 
         if x == "x":  # clean up and quit
             print("\nExiting...")
