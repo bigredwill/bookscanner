@@ -14,9 +14,9 @@ import tty
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Thread
 
-from flask import Flask, render_template, send_file
+from flask import Flask, jsonify, render_template, request, send_file
 from flask_socketio import SocketIO, emit
-from PIL import Image
+from PIL import Image, ImageDraw
 from PIL.ExifTags import TAGS
 
 # Get the directory where scan.py is located (for templates/static)
@@ -266,6 +266,165 @@ def handle_capture_trigger():
 def index():
     """Serve the main scanner interface."""
     return render_template("index.html")
+
+
+@app.route("/crop")
+def crop_interface():
+    """Serve the crop interface."""
+    return render_template("crop.html")
+
+
+@app.route("/api/crop-settings", methods=["GET", "POST"])
+def api_crop_settings():
+    """Get or save crop settings for a session."""
+    # Allow session to be specified via query parameter
+    session_name = request.args.get("session")
+
+    if session_name:
+        captures_dir = os.path.join(SCRIPT_DIR, "captures")
+        session_dir = os.path.join(captures_dir, session_name)
+        if not os.path.isdir(session_dir):
+            return jsonify({"status": "error", "message": "Session not found"}), 404
+    else:
+        session_dir = scanner_state.get("session_dir", os.getcwd())
+
+    crop_file = os.path.join(session_dir, "crop_settings.json")
+
+    if request.method == "POST":
+        # Save crop settings
+        crop_data = request.get_json()
+        try:
+            with open(crop_file, "w") as f:
+                json.dump(crop_data, f, indent=2)
+            return jsonify({"status": "ok", "message": "Crop settings saved"})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    else:
+        # Load crop settings
+        if os.path.exists(crop_file):
+            try:
+                with open(crop_file, "r") as f:
+                    crop_data = json.load(f)
+                return jsonify(crop_data)
+            except Exception as e:
+                return jsonify({"status": "error", "message": str(e)}), 500
+        else:
+            return jsonify({"status": "none", "message": "No crop settings found"})
+
+
+@app.route("/api/crop-preview", methods=["POST"])
+def api_crop_preview():
+    """Generate a crop preview image with the given coordinates."""
+    data = request.get_json()
+    image_filename = data.get("image")
+    crop_box = data.get("crop")
+    session_name = data.get("session")
+
+    if not image_filename or not crop_box:
+        return jsonify(
+            {"status": "error", "message": "Missing image or crop data"}
+        ), 400
+
+    if session_name:
+        captures_dir = os.path.join(SCRIPT_DIR, "captures")
+        session_dir = os.path.join(captures_dir, session_name)
+        if not os.path.isdir(session_dir):
+            return jsonify({"status": "error", "message": "Session not found"}), 404
+    else:
+        session_dir = scanner_state.get("session_dir", os.getcwd())
+
+    image_path = os.path.join(session_dir, image_filename)
+
+    if not os.path.exists(image_path):
+        return jsonify({"status": "error", "message": "Image not found"}), 404
+
+    try:
+        # Open image and draw crop rectangle
+        img = Image.open(image_path)
+        draw = ImageDraw.Draw(img)
+
+        # Draw red rectangle
+        left = crop_box.get("left", 0)
+        top = crop_box.get("top", 0)
+        right = crop_box.get("right", img.width)
+        bottom = crop_box.get("bottom", img.height)
+
+        draw.rectangle([left, top, right, bottom], outline="red", width=10)
+
+        # Save preview
+        preview_filename = image_filename.replace(".jpg", "_crop_preview.jpg")
+        preview_path = os.path.join(session_dir, preview_filename)
+        img.save(preview_path, quality=95)
+
+        return jsonify(
+            {
+                "status": "ok",
+                "preview_image": preview_filename,
+                "message": "Preview generated",
+            }
+        )
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/apply-crop", methods=["POST"])
+def api_apply_crop():
+    """Apply crop to all images in the session."""
+    data = request.get_json()
+    crop_box = data.get("crop")
+    session_name = data.get("session")
+
+    if not crop_box:
+        return jsonify({"status": "error", "message": "Missing crop data"}), 400
+
+    if session_name:
+        captures_dir = os.path.join(SCRIPT_DIR, "captures")
+        session_dir = os.path.join(captures_dir, session_name)
+        if not os.path.isdir(session_dir):
+            return jsonify({"status": "error", "message": "Session not found"}), 404
+    else:
+        session_dir = scanner_state.get("session_dir", os.getcwd())
+
+    # Find all images
+    images = sorted(glob.glob(os.path.join(session_dir, "img*.jpg")))
+
+    if not images:
+        return jsonify({"status": "error", "message": "No images found"}), 404
+
+    # Create output directory
+    output_dir = os.path.join(session_dir, "cropped")
+    os.makedirs(output_dir, exist_ok=True)
+
+    try:
+        left = crop_box.get("left", 0)
+        top = crop_box.get("top", 0)
+        right = crop_box.get("right")
+        bottom = crop_box.get("bottom")
+
+        cropped_count = 0
+        for img_path in images:
+            img = Image.open(img_path)
+            cropped = img.crop((left, top, right, bottom))
+
+            basename = os.path.basename(img_path)
+            output_path = os.path.join(
+                output_dir, basename.replace(".jpg", "_cropped.jpg")
+            )
+            cropped.save(output_path, quality=95)
+            cropped_count += 1
+
+        return jsonify(
+            {
+                "status": "ok",
+                "message": f"Cropped {cropped_count} images",
+                "output_dir": "cropped",
+            }
+        )
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 def get_file_size(filename):
@@ -678,282 +837,310 @@ if __name__ == "__main__":
         f"Commands: l/r=left/right only, s=toggle serial/parallel, q=toggle serial query, n=image number, x=quit\n"
     )
 
-    while True:
-        # Check for web-triggered capture
-        if scanner_state["capture_requested"]:
-            scanner_state["capture_requested"] = False
-            x = CAPTURE_KEY  # Simulate 'b' press from web
-            print(f"[Web trigger: {x}]")
-        else:
-            # Non-blocking input - check for keypresses
-            ch = getch_nonblocking()
+    try:
+        while True:
+            # Check for web-triggered capture
+            if scanner_state["capture_requested"]:
+                scanner_state["capture_requested"] = False
+                x = CAPTURE_KEY  # Simulate 'b' press from web
+                print(f"[Web trigger: {x}]")
+            else:
+                # Non-blocking input - check for keypresses
+                ch = getch_nonblocking()
 
-            if ch is None:
-                # No input, continue loop
-                time.sleep(0.05)
-                continue
+                if ch is None:
+                    # No input, continue loop
+                    time.sleep(0.05)
+                    continue
 
-            # Handle special characters
-            if ch == "\r" or ch == "\n":
-                ch = ""  # Treat Enter as empty string
-            elif ch == "\x03":  # Ctrl+C
-                print("\n\nInterrupted by user")
+                # Handle special characters
+                if ch == "\r" or ch == "\n":
+                    ch = ""  # Treat Enter as empty string
+                elif ch == "\x03":  # Ctrl+C
+                    print("\n\nInterrupted by user")
+                    break
+
+                x = ch
+
+            if x == "x":  # clean up and quit
+                print("\nExiting...")
                 break
 
-            x = ch
-
-        if x == "x":  # clean up and quit
-            print("\nExiting...")
-            break
-
-        if x == "s":  # toggle serial/parallel mode
-            use_parallel = not use_parallel
-            mode = "parallel" if use_parallel else "serial"
-            print(f"\nSwitched to {mode} capture mode")
-            continue
-
-        if x == "q":  # toggle serial query before capture
-            query_serials_before_capture = not query_serials_before_capture
-            status = "enabled" if query_serials_before_capture else "disabled"
-            print(f"\nSerial query before capture: {status}")
-            continue
-
-        if x == "n":  # jump to image number
-            print("\nEnter image number: ", end="", flush=True)
-            # Switch to blocking mode for number input
-            num_str = ""
-            while True:
-                ch = getch_blocking()
-                if ch == "\r" or ch == "\n":
-                    print()
-                    break
-                elif ch == "\x7f" or ch == "\x08":  # Backspace
-                    if num_str:
-                        num_str = num_str[:-1]
-                        print("\b \b", end="", flush=True)
-                elif ch.isdigit():
-                    num_str += ch
-                    print(ch, end="", flush=True)
-            try:
-                new_num = int(num_str)
-                img_num = new_num // 2 * 2  # convert to even number
-                print(f"Next image will be {img_num}")
-            except ValueError:
-                print("Invalid number")
-            continue
-
-        if x == "l":  # capture left camera only
-            if query_serials_before_capture:
-                port_serial_map = get_all_camera_serials()
-            else:
-                port_serial_map = get_all_camera_serials()
-            left_cam = None
-            for port, serial in port_serial_map.items():
-                if serial == scanner_state["left_cam_serial"]:
-                    left_cam = port
-
-            if not left_cam:
-                print("ERROR: Could not find left camera.")
-                print(f"  Expected serial: {scanner_state['left_cam_serial']}")
-                print(f"  Available ports: {port_serial_map}")
+            if x == "s":  # toggle serial/parallel mode
+                use_parallel = not use_parallel
+                mode = "parallel" if use_parallel else "serial"
+                print(f"\nSwitched to {mode} capture mode")
                 continue
 
-            print(f"Capturing LEFT camera only ({left_cam})...")
-            cmd = [
-                GPHOTO,
-                "--capture-image-and-download",
-                "--force-overwrite",
-                "--port",
-                left_cam,
-                "--filename",
-                IMG_FORMAT % img_num,
-            ]
-            print(f"  Command: {' '.join(cmd)}")
-            p1 = snap(left_cam, IMG_FORMAT % img_num)
-            returncode = p1.wait()
-            if returncode == 0:
-                print(f"✓ Left camera captured: {IMG_FORMAT % img_num}")
-                emit_status_update(f"Captured: {IMG_FORMAT % img_num}", "9f9")
-                emit_gallery_update()
-                img_num += 1
-            else:
-                print(f"✗ Left camera capture failed with return code: {returncode}")
-                print(f"  Port: {left_cam}")
-                print(f"  Serial: {scanner_state['left_cam_serial']}")
-            continue
-
-        if x == "r":  # capture right camera only
-            if query_serials_before_capture:
-                port_serial_map = get_all_camera_serials()
-            else:
-                port_serial_map = get_all_camera_serials()
-            right_cam = None
-            for port, serial in port_serial_map.items():
-                if serial == scanner_state["right_cam_serial"]:
-                    right_cam = port
-
-            if not right_cam:
-                print("ERROR: Could not find right camera.")
-                print(f"  Expected serial: {scanner_state['right_cam_serial']}")
-                print(f"  Available ports: {port_serial_map}")
+            if x == "q":  # toggle serial query before capture
+                query_serials_before_capture = not query_serials_before_capture
+                status = "enabled" if query_serials_before_capture else "disabled"
+                print(f"\nSerial query before capture: {status}")
                 continue
 
-            print(f"Capturing RIGHT camera only ({right_cam})...")
-            cmd = [
-                GPHOTO,
-                "--capture-image-and-download",
-                "--force-overwrite",
-                "--port",
-                right_cam,
-                "--filename",
-                IMG_FORMAT % img_num,
-            ]
-            print(f"  Command: {' '.join(cmd)}")
-            p1 = snap(right_cam, IMG_FORMAT % img_num)
-            returncode = p1.wait()
-            if returncode == 0:
-                print(f"✓ Right camera captured: {IMG_FORMAT % img_num}")
-                emit_status_update(f"Captured: {IMG_FORMAT % img_num}", "9f9")
-                emit_gallery_update()
-                img_num += 1
-            else:
-                print(f"✗ Right camera capture failed with return code: {returncode}")
-                print(f"  Port: {right_cam}")
-                print(f"  Serial: {scanner_state['right_cam_serial']}")
-            continue
-
-        if x == "" or x == CAPTURE_KEY:  # Empty input or 'b' = capture both cameras
-            print(f"\n[Capture #{img_num // 2 + 1}]", flush=True)
-
-            # Optionally re-query serials before capture
-            if query_serials_before_capture:
-                print("Querying camera serials...")
-                port_serial_map = get_all_camera_serials()
-            else:
-                # Just use the stored serials and find current ports
-                port_serial_map = get_all_camera_serials()
-
-            left_cam = None
-            right_cam = None
-            for port, serial in port_serial_map.items():
-                if serial == scanner_state["left_cam_serial"]:
-                    left_cam = port
-                elif serial == scanner_state["right_cam_serial"]:
-                    right_cam = port
-
-            if not left_cam or not right_cam:
-                print("ERROR: Could not find both cameras.")
-                print(f"  Expected left: {scanner_state['left_cam_serial']}")
-                print(f"  Expected right: {scanner_state['right_cam_serial']}")
-                print(f"  Available: {port_serial_map}")
+            if x == "n":  # jump to image number
+                print("\nEnter image number: ", end="", flush=True)
+                # Switch to blocking mode for number input
+                num_str = ""
+                while True:
+                    ch = getch_blocking()
+                    if ch == "\r" or ch == "\n":
+                        print()
+                        break
+                    elif ch == "\x7f" or ch == "\x08":  # Backspace
+                        if num_str:
+                            num_str = num_str[:-1]
+                            print("\b \b", end="", flush=True)
+                    elif ch.isdigit():
+                        num_str += ch
+                        print(ch, end="", flush=True)
+                try:
+                    new_num = int(num_str)
+                    img_num = new_num // 2 * 2  # convert to even number
+                    print(f"Next image will be {img_num}")
+                except ValueError:
+                    print("Invalid number")
                 continue
 
-            # Check if ports have shifted and update display
-            ports = list(port_serial_map.keys())
-            if ports != previous_cameras:
-                print(f"⚠️  Camera ports shifted: {previous_cameras} → {ports}")
-                print(f"   Left={left_cam}, Right={right_cam}")
-                previous_cameras = ports
-                scanner_state["left_cam_port"] = left_cam
-                scanner_state["right_cam_port"] = right_cam
-
-            if use_parallel:
-                # Try parallel capture
-                print(f"Capturing BOTH cameras in parallel mode...")
-                print(f"  LEFT: {left_cam}")
-                print(f"  RIGHT: {right_cam}")
-                emit_status_update("Capturing both cameras...", "ff9")
-
-                p1 = snap(left_cam, IMG_FORMAT % img_num)
-                p2 = snap(right_cam, IMG_FORMAT % (img_num + 1))
-
-                # Wait for both to complete
-                success = wait(p1, p2)
-
-                if success:
-                    print(f"✓ Both captures successful")
-                else:
-                    print(
-                        f"✗ Parallel capture failed (left={p1.returncode}, right={p2.returncode})"
-                    )
-                    print(
-                        f"  Hint: Use 's' to switch to serial mode if parallel isn't working"
-                    )
-                    continue
-            else:
-                # Serial capture mode
-                print(f"Capturing LEFT: {left_cam}")
-                p1 = snap(left_cam, IMG_FORMAT % img_num)
-                returncode1 = p1.wait()
-                if returncode1 == 0:
-                    print(f"✓ Left capture successful: {IMG_FORMAT % img_num}")
-                else:
-                    print(
-                        f"✗ Left camera capture failed with return code: {returncode1}"
-                    )
-                    print(
-                        f"  Port: {left_cam}, Serial: {scanner_state['left_cam_serial']}"
-                    )
-                    continue
-
-                # Wait for USB to settle
-                print("Waiting for USB to settle...")
-                time.sleep(1.0)
-
-                # Re-detect before second camera if querying serials
+            if x == "l":  # capture left camera only
                 if query_serials_before_capture:
                     port_serial_map = get_all_camera_serials()
-                    right_cam = None
-                    for port, serial in port_serial_map.items():
-                        if serial == scanner_state["right_cam_serial"]:
-                            right_cam = port
-
-                    if not right_cam:
-                        print(
-                            "ERROR: Could not find right camera before second capture."
-                        )
-                        print(f"  Expected serial: {scanner_state['right_cam_serial']}")
-                        print(f"  Available: {port_serial_map}")
-                        continue
-
-                # Capture right camera
-                print(f"Capturing RIGHT: {right_cam}")
-                p2 = snap(right_cam, IMG_FORMAT % (img_num + 1))
-                returncode2 = p2.wait()
-                if returncode2 == 0:
-                    print(f"✓ Right capture successful: {IMG_FORMAT % (img_num + 1)}")
                 else:
-                    print(
-                        f"✗ Right camera capture failed with return code: {returncode2}"
-                    )
-                    print(
-                        f"  Port: {right_cam}, Serial: {scanner_state['right_cam_serial']}"
-                    )
+                    port_serial_map = get_all_camera_serials()
+                left_cam = None
+                for port, serial in port_serial_map.items():
+                    if serial == scanner_state["left_cam_serial"]:
+                        left_cam = port
+
+                if not left_cam:
+                    print("ERROR: Could not find left camera.")
+                    print(f"  Expected serial: {scanner_state['left_cam_serial']}")
+                    print(f"  Available ports: {port_serial_map}")
                     continue
 
-            # Auto-rotate images
-            rightpic = "img" + str(img_num).zfill(5) + ".jpg"
-            leftpic = "img" + str(img_num + 1).zfill(5) + ".jpg"
-            os.system("jpegtran -rot 270 " + rightpic + " > opt-" + rightpic)
-            os.system("cp opt-" + rightpic + " " + rightpic)
-            os.system("rm opt-" + rightpic)
-            os.system("jpegtran -rot 90 " + leftpic + " > opt-" + leftpic)
-            os.system("cp opt-" + leftpic + " " + leftpic)
-            os.system("rm opt-" + leftpic)
+                print(f"Capturing LEFT camera only ({left_cam})...")
+                cmd = [
+                    GPHOTO,
+                    "--capture-image-and-download",
+                    "--force-overwrite",
+                    "--port",
+                    left_cam,
+                    "--filename",
+                    IMG_FORMAT % img_num,
+                ]
+                print(f"  Command: {' '.join(cmd)}")
+                p1 = snap(left_cam, IMG_FORMAT % img_num)
+                returncode = p1.wait()
+                if returncode == 0:
+                    print(f"✓ Left camera captured: {IMG_FORMAT % img_num}")
+                    emit_status_update(f"Captured: {IMG_FORMAT % img_num}", "9f9")
+                    emit_gallery_update()
+                    img_num += 1
+                else:
+                    print(
+                        f"✗ Left camera capture failed with return code: {returncode}"
+                    )
+                    print(f"  Port: {left_cam}")
+                    print(f"  Serial: {scanner_state['left_cam_serial']}")
+                continue
 
-            # Update image list and status
-            emit_status_update(f"Captured: {rightpic}, {leftpic}", "9f9")
-            emit_gallery_update()
-            print(f"✓ Saved: {rightpic}, {leftpic}")
-            print(f"Ready.\n")
+            if x == "r":  # capture right camera only
+                if query_serials_before_capture:
+                    port_serial_map = get_all_camera_serials()
+                else:
+                    port_serial_map = get_all_camera_serials()
+                right_cam = None
+                for port, serial in port_serial_map.items():
+                    if serial == scanner_state["right_cam_serial"]:
+                        right_cam = port
 
-            img_num += 2
-            continue
+                if not right_cam:
+                    print("ERROR: Could not find right camera.")
+                    print(f"  Expected serial: {scanner_state['right_cam_serial']}")
+                    print(f"  Available ports: {port_serial_map}")
+                    continue
 
-        try:  # assume x is an image number to jump to
-            img_num = int(x) // 2 * 2  # convert to even number
-        except ValueError:
-            print("unrecognized command")
-            continue
+                print(f"Capturing RIGHT camera only ({right_cam})...")
+                cmd = [
+                    GPHOTO,
+                    "--capture-image-and-download",
+                    "--force-overwrite",
+                    "--port",
+                    right_cam,
+                    "--filename",
+                    IMG_FORMAT % img_num,
+                ]
+                print(f"  Command: {' '.join(cmd)}")
+                p1 = snap(right_cam, IMG_FORMAT % img_num)
+                returncode = p1.wait()
+                if returncode == 0:
+                    print(f"✓ Right camera captured: {IMG_FORMAT % img_num}")
+                    emit_status_update(f"Captured: {IMG_FORMAT % img_num}", "9f9")
+                    emit_gallery_update()
+                    img_num += 1
+                else:
+                    print(
+                        f"✗ Right camera capture failed with return code: {returncode}"
+                    )
+                    print(f"  Port: {right_cam}")
+                    print(f"  Serial: {scanner_state['right_cam_serial']}")
+                continue
 
-    print("Scanning complete!")
+            if x == "" or x == CAPTURE_KEY:  # Empty input or 'b' = capture both cameras
+                print(f"\n[Capture #{img_num // 2 + 1}]", flush=True)
+
+                # Optionally re-query serials before capture
+                if query_serials_before_capture:
+                    print("Querying camera serials...")
+                    port_serial_map = get_all_camera_serials()
+                else:
+                    # Just use the stored serials and find current ports
+                    port_serial_map = get_all_camera_serials()
+
+                left_cam = None
+                right_cam = None
+                for port, serial in port_serial_map.items():
+                    if serial == scanner_state["left_cam_serial"]:
+                        left_cam = port
+                    elif serial == scanner_state["right_cam_serial"]:
+                        right_cam = port
+
+                if not left_cam or not right_cam:
+                    print("ERROR: Could not find both cameras.")
+                    print(f"  Expected left: {scanner_state['left_cam_serial']}")
+                    print(f"  Expected right: {scanner_state['right_cam_serial']}")
+                    print(f"  Available: {port_serial_map}")
+                    continue
+
+                # Check if ports have shifted and update display
+                ports = list(port_serial_map.keys())
+                if ports != previous_cameras:
+                    print(f"⚠️  Camera ports shifted: {previous_cameras} → {ports}")
+                    print(f"   Left={left_cam}, Right={right_cam}")
+                    previous_cameras = ports
+                    scanner_state["left_cam_port"] = left_cam
+                    scanner_state["right_cam_port"] = right_cam
+
+                if use_parallel:
+                    # Try parallel capture
+                    print(f"Capturing BOTH cameras in parallel mode...")
+                    print(f"  LEFT: {left_cam}")
+                    print(f"  RIGHT: {right_cam}")
+                    emit_status_update("Capturing both cameras...", "ff9")
+
+                    p1 = snap(left_cam, IMG_FORMAT % img_num)
+                    p2 = snap(right_cam, IMG_FORMAT % (img_num + 1))
+
+                    # Wait for both to complete
+                    success = wait(p1, p2)
+
+                    if success:
+                        print(f"✓ Both captures successful")
+                    else:
+                        print(
+                            f"✗ Parallel capture failed (left={p1.returncode}, right={p2.returncode})"
+                        )
+                        print(
+                            f"  Hint: Use 's' to switch to serial mode if parallel isn't working"
+                        )
+                        continue
+                else:
+                    # Serial capture mode
+                    print(f"Capturing LEFT: {left_cam}")
+                    p1 = snap(left_cam, IMG_FORMAT % img_num)
+                    returncode1 = p1.wait()
+                    if returncode1 == 0:
+                        print(f"✓ Left capture successful: {IMG_FORMAT % img_num}")
+                    else:
+                        print(
+                            f"✗ Left camera capture failed with return code: {returncode1}"
+                        )
+                        print(
+                            f"  Port: {left_cam}, Serial: {scanner_state['left_cam_serial']}"
+                        )
+                        continue
+
+                    # Wait for USB to settle
+                    print("Waiting for USB to settle...")
+                    time.sleep(1.0)
+
+                    # Re-detect before second camera if querying serials
+                    if query_serials_before_capture:
+                        port_serial_map = get_all_camera_serials()
+                        right_cam = None
+                        for port, serial in port_serial_map.items():
+                            if serial == scanner_state["right_cam_serial"]:
+                                right_cam = port
+
+                        if not right_cam:
+                            print(
+                                "ERROR: Could not find right camera before second capture."
+                            )
+                            print(
+                                f"  Expected serial: {scanner_state['right_cam_serial']}"
+                            )
+                            print(f"  Available: {port_serial_map}")
+                            continue
+
+                    # Capture right camera
+                    print(f"Capturing RIGHT: {right_cam}")
+                    p2 = snap(right_cam, IMG_FORMAT % (img_num + 1))
+                    returncode2 = p2.wait()
+                    if returncode2 == 0:
+                        print(
+                            f"✓ Right capture successful: {IMG_FORMAT % (img_num + 1)}"
+                        )
+                    else:
+                        print(
+                            f"✗ Right camera capture failed with return code: {returncode2}"
+                        )
+                        print(
+                            f"  Port: {right_cam}, Serial: {scanner_state['right_cam_serial']}"
+                        )
+                        continue
+
+                # Auto-rotate images
+                rightpic = "img" + str(img_num).zfill(5) + ".jpg"
+                leftpic = "img" + str(img_num + 1).zfill(5) + ".jpg"
+                os.system("jpegtran -rot 270 " + rightpic + " > opt-" + rightpic)
+                os.system("cp opt-" + rightpic + " " + rightpic)
+                os.system("rm opt-" + rightpic)
+                os.system("jpegtran -rot 90 " + leftpic + " > opt-" + leftpic)
+                os.system("cp opt-" + leftpic + " " + leftpic)
+                os.system("rm opt-" + leftpic)
+
+                # Update image list and status
+                emit_status_update(f"Captured: {rightpic}, {leftpic}", "9f9")
+                emit_gallery_update()
+                print(f"✓ Saved: {rightpic}, {leftpic}")
+                print(f"Ready.\n")
+
+                img_num += 2
+                continue
+
+            try:  # assume x is an image number to jump to
+                img_num = int(x) // 2 * 2  # convert to even number
+            except ValueError:
+                print("unrecognized command")
+                continue
+
+    except KeyboardInterrupt:
+        print("\n\nInterrupted by keyboard (Ctrl+C)")
+
+    finally:
+        # Save stop time to metadata
+        scan_stop_time = datetime.now()
+        metadata["scan_stop_timestamp"] = scan_stop_time.isoformat()
+        metadata["scan_duration_seconds"] = (
+            scan_stop_time - scan_start_time
+        ).total_seconds()
+        metadata["total_images_captured"] = img_num
+
+        try:
+            with open(metadata_file, "w") as f:
+                json.dump(metadata, f, indent=2)
+            print(f"✓ Metadata updated with stop time: {metadata_file}")
+        except Exception as e:
+            print(f"WARNING: Could not update metadata: {e}")
+
+        print("Scanning complete!")
