@@ -8,65 +8,54 @@
     </head>
     <body>
         <div class="header">
-            <div class="title">Scanner Status</div>
-
-            <div class="session-info">
-                <strong>Current Session:</strong>
-                <span id="session-name">-</span>
+            <div class="header-row">
+                <span class="title">Scanner</span>
+                <span class="session-info">
+                    <span id="session-name">-</span>
+                    <span id="session-metadata"></span>
+                </span>
+                <span class="status-inline" id="status-text">Loading...</span>
+                <span class="status-inline"
+                    >Images: <span id="image-count">0</span></span
+                >
+            </div>
+            <div class="header-row cameras-row">
+                <span class="camera-info">
+                    L: <span id="left-port">-</span>
+                    <span class="camera-serial" id="left-serial"></span>
+                    <span id="left-battery" class="battery-indicator"></span>
+                </span>
+                <span class="camera-info">
+                    R: <span id="right-port">-</span>
+                    <span class="camera-serial" id="right-serial"></span>
+                    <span id="right-battery" class="battery-indicator"></span>
+                </span>
+                <button onclick="querySerials()" class="small-btn">
+                    Serials
+                </button>
+                <button onclick="refreshBatteryLevels()" class="small-btn">
+                    Battery
+                </button>
                 <button onclick="toggleSessionBrowser()" class="small-btn">
-                    Browse Sessions
+                    Sessions
                 </button>
             </div>
-
-            <div class="session-metadata" id="session-metadata"></div>
-
-            <div class="camera-info">
-                🎥 Left: <span id="left-port">-</span>
-            </div>
-            <div class="camera-serial" id="left-serial">Serial: -</div>
-            <div class="camera-info">
-                🎥 Right: <span id="right-port">-</span>
-            </div>
-            <div class="camera-serial" id="right-serial">Serial: -</div>
-            <button onclick="querySerials()">Refresh Serials</button>
-            <div class="status">
-                Images captured: <span id="image-count">0</span>
-            </div>
-            <div class="status" id="status-text">Loading...</div>
-
-            <div
-                style="
-                    margin-top: 15px;
-                    padding: 10px;
-                    background: #fff3cd;
-                    border-radius: 5px;
-                "
-            >
-                <button
-                    onclick="triggerCapture()"
-                    style="
-                        background: #28a745;
-                        font-size: 16px;
-                        padding: 12px 24px;
-                    "
-                >
-                    📷 Capture Images (or press 'b')
+            <div class="header-row actions-row">
+                <button onclick="triggerCapture()" class="capture-btn">
+                    Capture (b)
                 </button>
-                <a
-                    href="/crop"
-                    style="
-                        display: inline-block;
-                        margin-left: 10px;
-                        background: #007bff;
-                        color: white;
-                        text-decoration: none;
-                        font-size: 16px;
-                        padding: 12px 24px;
-                        border-radius: 4px;
-                    "
-                >
-                    ✂️ Crop Images
-                </a>
+                <a href="/crop" class="crop-link">Crop</a>
+                <input
+                    type="text"
+                    id="notes-input"
+                    class="notes-input"
+                    placeholder="Notes..."
+                    onchange="saveNotes()"
+                />
+                <span class="disk-info">
+                    Local: <span id="disk-local">-</span> USB:
+                    <span id="disk-usb">-</span>
+                </span>
             </div>
         </div>
 

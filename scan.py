@@ -6,6 +6,7 @@ import json
 import os
 import re
 import select
+import shutil
 import subprocess
 import sys
 import termios
@@ -34,6 +35,8 @@ scanner_state = {
     "right_cam_port": "",
     "left_cam_serial": "",
     "right_cam_serial": "",
+    "left_cam_battery": None,
+    "right_cam_battery": None,
     "images": [],
     "status_color": "fff",
     "status_text": "Initializing...",
@@ -107,18 +110,20 @@ def serve_session_image(session_name, filename):
 
 @app.route("/api/camera-info")
 def api_camera_info():
-    """Query camera serial numbers without interfering with scanning."""
+    """Query camera serial numbers and battery levels."""
     result = {
         "left": {
             "port": scanner_state["left_cam_port"],
             "serial": scanner_state["left_cam_serial"],
+            "battery": scanner_state["left_cam_battery"],
         },
         "right": {
             "port": scanner_state["right_cam_port"],
             "serial": scanner_state["right_cam_serial"],
+            "battery": scanner_state["right_cam_battery"],
         },
         "error": None,
-        "status": "Using cached serials",
+        "status": "Using cached data",
     }
 
     # Only query if we don't have serials yet
@@ -176,6 +181,95 @@ def api_camera_info():
     return json.dumps(result)
 
 
+@app.route("/api/disk-usage")
+def api_disk_usage():
+    """Get disk usage for captures directory and USB backup."""
+
+    def get_usage(path):
+        """Get disk usage for a path, returns None if path doesn't exist."""
+        if not os.path.exists(path):
+            return None
+        try:
+            usage = shutil.disk_usage(path)
+            return {
+                "total": usage.total,
+                "used": usage.used,
+                "free": usage.free,
+                "percent_used": round(usage.used / usage.total * 100, 1),
+            }
+        except Exception:
+            return None
+
+    captures_path = os.path.join(SCRIPT_DIR, "captures")
+    usb_path = "/mnt/usb"
+
+    result = {
+        "captures": get_usage(captures_path),
+        "captures_path": captures_path,
+        "usb": get_usage(usb_path),
+        "usb_path": usb_path,
+    }
+
+    return json.dumps(result)
+
+
+@app.route("/api/battery-levels")
+def api_battery_levels():
+    """Query battery levels for both cameras."""
+    result = {
+        "left": {"port": scanner_state["left_cam_port"], "battery": None},
+        "right": {"port": scanner_state["right_cam_port"], "battery": None},
+        "error": None,
+    }
+
+    try:
+        # Query left camera battery
+        if scanner_state["left_cam_port"]:
+            battery = get_battery_level(scanner_state["left_cam_port"])
+            scanner_state["left_cam_battery"] = battery
+            result["left"]["battery"] = battery
+
+        # Query right camera battery
+        if scanner_state["right_cam_port"]:
+            battery = get_battery_level(scanner_state["right_cam_port"])
+            scanner_state["right_cam_battery"] = battery
+            result["right"]["battery"] = battery
+    except Exception as e:
+        result["error"] = str(e)
+
+    return json.dumps(result)
+
+
+@app.route("/api/notes", methods=["GET", "POST"])
+def api_notes():
+    """Get or update scan notes."""
+    if request.method == "GET":
+        notes = scanner_state.get("metadata", {}).get("notes", "")
+        return json.dumps({"notes": notes})
+
+    elif request.method == "POST":
+        data = request.get_json()
+        notes = data.get("notes", "")
+
+        # Update in-memory metadata
+        if "metadata" in scanner_state:
+            scanner_state["metadata"]["notes"] = notes
+
+            # Save to metadata file
+            metadata_file = os.path.join(
+                scanner_state.get("session_dir", ""), "scan_metadata.json"
+            )
+            if metadata_file and os.path.exists(os.path.dirname(metadata_file)):
+                try:
+                    with open(metadata_file, "w") as f:
+                        json.dump(scanner_state["metadata"], f, indent=2)
+                    return json.dumps({"success": True})
+                except Exception as e:
+                    return json.dumps({"success": False, "error": str(e)})
+
+        return json.dumps({"success": False, "error": "No active session"})
+
+
 @app.route("/api/gallery-data")
 def api_gallery_data():
     """Return gallery data as JSON."""
@@ -190,6 +284,8 @@ def api_gallery_data():
             "right_cam_port": scanner_state["right_cam_port"],
             "left_cam_serial": scanner_state["left_cam_serial"],
             "right_cam_serial": scanner_state["right_cam_serial"],
+            "left_cam_battery": scanner_state["left_cam_battery"],
+            "right_cam_battery": scanner_state["right_cam_battery"],
             "images": images_data,
             "status_color": scanner_state["status_color"],
             "status_text": scanner_state["status_text"],
@@ -501,9 +597,36 @@ def get_image_metadata(image_path):
     return metadata
 
 
+def get_battery_level(port):
+    """Get battery level for a camera via gphoto2 config."""
+    try:
+        output = subprocess.check_output(
+            [GPHOTO, f"--port={port}", "--get-config", "/main/status/batterylevel"],
+            timeout=3,
+            stderr=subprocess.DEVNULL,
+        ).decode()
+        # Parse output like "Current: 100%" or "Current: 67%"
+        match = re.search(r"Current:\s*(\d+)%?", output)
+        if match:
+            return int(match.group(1))
+        # Some cameras return text like "Low", "Half", "Full"
+        text_match = re.search(r"Current:\s*(.+)", output)
+        if text_match:
+            level_text = text_match.group(1).strip().lower()
+            # Map common text values to percentages
+            level_map = {"low": 20, "half": 50, "full": 100, "high": 80}
+            return level_map.get(level_text, None)
+    except subprocess.CalledProcessError:
+        # Config option may not exist on this camera
+        pass
+    except Exception as e:
+        print(f"DEBUG: Error getting battery level for {port}: {e}")
+    return None
+
+
 def get_camera_info(port):
     """Get camera model and other info from gphoto2."""
-    info = {"serial": None, "model": None, "manufacturer": None}
+    info = {"serial": None, "model": None, "manufacturer": None, "battery": None}
 
     try:
         # Get camera summary which contains model info
@@ -525,6 +648,9 @@ def get_camera_info(port):
         serial_match = re.search(r"Serial Number:\s+(.+)", summary)
         if serial_match:
             info["serial"] = serial_match.group(1).strip()
+
+        # Get battery level
+        info["battery"] = get_battery_level(port)
 
     except Exception as e:
         print(f"DEBUG: Error getting camera info for {port}: {e}")
@@ -734,15 +860,28 @@ if __name__ == "__main__":
     print(f"📡 Web server running at http://localhost:{PORT}")
     print("Open this URL in your browser to see live scanner updates\n")
 
-    # Detect cameras and get serials
-    print("Detecting cameras...")
-    print("Getting camera serial numbers...")
-    port_serial_map = get_all_camera_serials()
+    # Detect cameras and get serials (with retry loop)
+    while True:
+        print("Detecting cameras...")
+        port_serial_map = get_all_camera_serials()
 
-    if len(port_serial_map) != 2:
-        print(f"ERROR: Expected 2 cameras, found {len(port_serial_map)}")
-        print(f"Cameras found: {port_serial_map}")
-        sys.exit(1)
+        if len(port_serial_map) == 2:
+            break
+        elif len(port_serial_map) == 0:
+            print("No cameras found.")
+        else:
+            print(f"Found {len(port_serial_map)} camera(s), need 2:")
+            for port, serial in port_serial_map.items():
+                print(f"  {port} - {serial}")
+
+        print(
+            "\nPlease connect both cameras and press Enter to retry (or 'q' to quit)..."
+        )
+        resp = input().strip().lower()
+        if resp == "q":
+            print("Exiting.")
+            sys.exit(0)
+        print()
 
     # Display cameras and ask user to assign left/right
     print("\nDetected cameras:")
@@ -778,6 +917,17 @@ if __name__ == "__main__":
     # Update global state
     scanner_state["left_cam_port"] = left_cam
     scanner_state["right_cam_port"] = right_cam
+
+    # Get initial battery levels
+    camera_info_map = scanner_state.get("camera_info_map", {})
+    left_cam_info = camera_info_map.get(left_cam, {})
+    right_cam_info = camera_info_map.get(right_cam, {})
+    scanner_state["left_cam_battery"] = left_cam_info.get("battery")
+    scanner_state["right_cam_battery"] = right_cam_info.get("battery")
+    if scanner_state["left_cam_battery"] is not None:
+        print(f"Left camera battery: {scanner_state['left_cam_battery']}%")
+    if scanner_state["right_cam_battery"] is not None:
+        print(f"Right camera battery: {scanner_state['right_cam_battery']}%")
 
     # Capture preview images
     print("Skipping preview - going straight to scanning")
@@ -1130,17 +1280,55 @@ if __name__ == "__main__":
     finally:
         # Save stop time to metadata
         scan_stop_time = datetime.now()
+        duration_seconds = (scan_stop_time - scan_start_time).total_seconds()
         metadata["scan_stop_timestamp"] = scan_stop_time.isoformat()
-        metadata["scan_duration_seconds"] = (
-            scan_stop_time - scan_start_time
-        ).total_seconds()
+        metadata["scan_duration_seconds"] = duration_seconds
         metadata["total_images_captured"] = img_num
 
         try:
             with open(metadata_file, "w") as f:
                 json.dump(metadata, f, indent=2)
-            print(f"✓ Metadata updated with stop time: {metadata_file}")
         except Exception as e:
             print(f"WARNING: Could not update metadata: {e}")
 
-        print("Scanning complete!")
+        # Print session summary
+        duration_mins = int(duration_seconds // 60)
+        duration_secs = int(duration_seconds % 60)
+        num_pages = img_num // 2
+        current_notes = metadata.get("notes", "")
+
+        print("\n" + "=" * 50)
+        print("SESSION SUMMARY")
+        print("=" * 50)
+        print(f"Session:    {session_name}")
+        if magazine_name:
+            print(f"Magazine:   {magazine_name}")
+        if scanner_person:
+            print(f"Scanned by: {scanner_person}")
+        print(f"Duration:   {duration_mins}m {duration_secs}s")
+        print(f"Images:     {img_num}")
+        print(f"Pages:      {num_pages}")
+        if num_pages > 0 and duration_seconds > 0:
+            secs_per_page = duration_seconds / num_pages
+            print(f"Avg pace:   {secs_per_page:.1f}s per page")
+        print(f"Output:     {session_dir}/")
+        print("=" * 50)
+
+        # Prompt for notes
+        if current_notes:
+            print(f"\nCurrent notes: {current_notes}")
+        print("Add/amend notes (Enter to keep, or type new notes):")
+        try:
+            new_notes = input("> ").strip()
+            if new_notes:
+                metadata["notes"] = new_notes
+                try:
+                    with open(metadata_file, "w") as f:
+                        json.dump(metadata, f, indent=2)
+                    print(f"Notes saved.")
+                except Exception as e:
+                    print(f"WARNING: Could not save notes: {e}")
+            elif current_notes:
+                print("Notes unchanged.")
+        except (EOFError, KeyboardInterrupt):
+            print("\nSkipping notes.")

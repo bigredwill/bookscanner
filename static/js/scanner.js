@@ -2,13 +2,79 @@
 let previousImageCount = 0;
 let currentViewingSession = null; // null means viewing current session
 
+// Debounce state for foot pedal input
+let lastCaptureTime = 0;
+const DEBOUNCE_MS = 500; // Minimum time between captures in milliseconds
+
 // Initialize Socket.IO connection
 const socket = io();
 
-// Add keyboard listener for 'b' key
+function formatBytes(bytes) {
+  if (bytes === 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}
+
+function updateDiskUsage() {
+  fetch("/api/disk-usage")
+    .then((r) => r.json())
+    .then((data) => {
+      if (data.captures) {
+        const local = `${formatBytes(data.captures.free)} free`;
+        document.getElementById("disk-local").textContent = local;
+      } else {
+        document.getElementById("disk-local").textContent = "-";
+      }
+
+      if (data.usb) {
+        const usb = `${formatBytes(data.usb.free)} free`;
+        document.getElementById("disk-usb").textContent = usb;
+      } else {
+        document.getElementById("disk-usb").textContent = "not mounted";
+      }
+    })
+    .catch((e) => console.log("Error fetching disk usage:", e));
+}
+
+function loadNotes() {
+  fetch("/api/notes")
+    .then((r) => r.json())
+    .then((data) => {
+      document.getElementById("notes-input").value = data.notes || "";
+    })
+    .catch((e) => console.log("Error loading notes:", e));
+}
+
+function saveNotes() {
+  const notes = document.getElementById("notes-input").value;
+  fetch("/api/notes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ notes: notes }),
+  })
+    .then((r) => r.json())
+    .then((data) => {
+      if (!data.success) {
+        console.log("Error saving notes:", data.error);
+      }
+    })
+    .catch((e) => console.log("Error saving notes:", e));
+}
+
+// Add keyboard listener for 'b' key (foot pedal)
 document.addEventListener("keydown", function (event) {
+  // Ignore if typing in an input field
+  if (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA") {
+    return;
+  }
   if (event.key === "b" || event.key === "B") {
-    triggerCapture();
+    const now = Date.now();
+    if (now - lastCaptureTime >= DEBOUNCE_MS) {
+      lastCaptureTime = now;
+      triggerCapture();
+    }
   }
 });
 
@@ -75,6 +141,43 @@ function buildImageHTML(img, sessionPrefix) {
       </div>`;
 }
 
+function formatBatteryLevel(level) {
+  if (level === null || level === undefined) {
+    return "";
+  }
+  let icon = "🔋";
+  if (level <= 20) {
+    icon = "🪫";
+  }
+  return `${icon} ${level}%`;
+}
+
+function updateBatteryDisplay(leftBattery, rightBattery) {
+  document.getElementById("left-battery").textContent =
+    formatBatteryLevel(leftBattery);
+  document.getElementById("right-battery").textContent =
+    formatBatteryLevel(rightBattery);
+}
+
+function refreshBatteryLevels() {
+  let btn = event.target;
+  btn.disabled = true;
+  btn.textContent = "Checking...";
+
+  fetch("/api/battery-levels")
+    .then((r) => r.json())
+    .then((data) => {
+      updateBatteryDisplay(data.left.battery, data.right.battery);
+      btn.disabled = false;
+      btn.textContent = "Refresh Battery";
+    })
+    .catch((e) => {
+      console.log("Error fetching battery levels:", e);
+      btn.disabled = false;
+      btn.textContent = "Retry";
+    });
+}
+
 function updateGallery() {
   fetch("/api/gallery-data")
     .then((r) => r.json())
@@ -82,12 +185,16 @@ function updateGallery() {
       // Update header info (camera ports, serials, session info)
       document.getElementById("left-port").textContent = data.left_cam_port;
       document.getElementById("right-port").textContent = data.right_cam_port;
-      document.getElementById("left-serial").textContent =
-        "Serial: " + data.left_cam_serial;
+      document.getElementById("left-serial").textContent = data.left_cam_serial
+        ? "(" + data.left_cam_serial + ")"
+        : "";
       document.getElementById("right-serial").textContent =
-        "Serial: " + data.right_cam_serial;
+        data.right_cam_serial ? "(" + data.right_cam_serial + ")" : "";
       document.getElementById("session-name").textContent =
         data.session_name || "-";
+
+      // Update battery levels
+      updateBatteryDisplay(data.left_cam_battery, data.right_cam_battery);
 
       // Update session metadata
       if (data.metadata) {
@@ -194,10 +301,12 @@ function querySerials() {
   fetch("/api/camera-info")
     .then((r) => r.json())
     .then((data) => {
-      document.getElementById("left-serial").textContent =
-        "Serial: " + data.left.serial;
-      document.getElementById("right-serial").textContent =
-        "Serial: " + data.right.serial;
+      document.getElementById("left-serial").textContent = data.left.serial
+        ? "(" + data.left.serial + ")"
+        : "";
+      document.getElementById("right-serial").textContent = data.right.serial
+        ? "(" + data.right.serial + ")"
+        : "";
       btn.disabled = false;
       btn.textContent = "Refresh Serials";
     })
@@ -208,6 +317,9 @@ function querySerials() {
     });
 }
 
-// Initial load and periodic refresh every 5 seconds (WebSocket handles real-time updates)
+// Initial load and periodic refresh
 updateGallery();
+updateDiskUsage();
+loadNotes();
 setInterval(updateGallery, 5000);
+setInterval(updateDiskUsage, 30000); // Disk usage every 30 seconds

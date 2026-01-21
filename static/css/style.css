@@ -1,56 +1,62 @@
 body {
     text-align: center;
     font-family: sans-serif;
-    padding: 20px;
+    padding: 10px;
     transition: background-color 0.3s;
     margin: 0;
 }
 
 .header {
     background: #f0f0f0;
-    padding: 15px;
+    padding: 8px 12px;
     border-radius: 5px;
-    margin-bottom: 20px;
+    margin-bottom: 10px;
     text-align: left;
 }
 
+.header-row {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    margin: 4px 0;
+    flex-wrap: wrap;
+}
+
 .title {
-    font-size: 18px;
+    font-size: 14px;
     font-weight: bold;
-    margin-bottom: 10px;
 }
 
 .camera-info {
-    font-size: 13px;
-    margin: 8px 0;
-    font-weight: bold;
+    font-size: 12px;
     font-family: monospace;
+}
+
+.battery-indicator {
+    margin-left: 5px;
+    font-size: 11px;
+    color: #28a745;
 }
 
 .camera-serial {
-    font-size: 12px;
-    color: #555;
-    margin-left: 20px;
-    font-family: monospace;
-    margin-bottom: 5px;
+    font-size: 11px;
+    color: #666;
+    margin-left: 4px;
 }
 
-.status {
-    font-weight: bold;
+.status-inline {
+    font-size: 12px;
     color: #333;
-    font-size: 14px;
-    margin: 10px 0;
 }
 
 button {
     background: #007bff;
     color: white;
     border: none;
-    padding: 8px 15px;
-    border-radius: 4px;
+    padding: 4px 10px;
+    border-radius: 3px;
     cursor: pointer;
-    font-size: 12px;
-    margin-top: 10px;
+    font-size: 11px;
 }
 
 button:hover {
@@ -62,23 +68,66 @@ button:active {
 }
 
 button.small-btn {
+    padding: 3px 8px;
+    font-size: 10px;
+}
+
+button.capture-btn {
+    background: #28a745;
+}
+
+button.capture-btn:hover {
+    background: #1e7e34;
+}
+
+.crop-link {
+    background: #6c757d;
+    color: white;
+    text-decoration: none;
     padding: 4px 10px;
+    border-radius: 3px;
     font-size: 11px;
+}
+
+.crop-link:hover {
+    background: #5a6268;
+}
+
+.notes-input {
+    flex: 1;
+    padding: 3px 8px;
+    font-size: 11px;
+    border: 1px solid #ccc;
+    border-radius: 3px;
     margin-left: 10px;
 }
 
-.session-info {
-    background: #e3f2fd;
-    padding: 10px;
-    border-radius: 4px;
-    margin: 10px 0;
-    font-size: 13px;
+.notes-input:focus {
+    outline: none;
+    border-color: #007bff;
 }
 
-.session-metadata {
+.disk-info {
     font-size: 11px;
     color: #666;
-    margin: 5px 0;
+    margin-left: 10px;
+    font-family: monospace;
+    white-space: nowrap;
+}
+
+.disk-info span {
+    margin-right: 10px;
+}
+
+.session-info {
+    font-size: 12px;
+    color: #555;
+}
+
+#session-metadata {
+    font-size: 11px;
+    color: #888;
+    margin-left: 5px;
 }
 
 .session-browser {
