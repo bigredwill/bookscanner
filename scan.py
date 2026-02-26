@@ -370,6 +370,261 @@ def crop_interface():
     return render_template("crop.html")
 
 
+@app.route("/api/preview/<camera>")
+def api_preview_capture(camera):
+    """Capture a preview image from specified camera (left/right) without saving to session."""
+    import tempfile
+    import base64
+
+    if camera not in ["left", "right"]:
+        return jsonify({"status": "error", "message": "Invalid camera, use 'left' or 'right'"}), 400
+
+    # Get the camera port based on serial
+    port_serial_map = get_all_camera_serials()
+
+    if camera == "left":
+        target_serial = scanner_state.get("left_cam_serial")
+        cam_port = scanner_state.get("left_cam_port")
+    else:
+        target_serial = scanner_state.get("right_cam_serial")
+        cam_port = scanner_state.get("right_cam_port")
+
+    # Find current port for the serial (in case ports shifted)
+    for port, serial in port_serial_map.items():
+        if serial == target_serial:
+            cam_port = port
+            break
+
+    if not cam_port:
+        return jsonify({
+            "status": "error",
+            "message": f"Could not find {camera} camera",
+            "expected_serial": target_serial,
+            "available": port_serial_map
+        }), 404
+
+    # Capture to a temporary file
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        result = subprocess.run(
+            [GPHOTO, "--capture-image-and-download", "--force-overwrite",
+             "--port", cam_port, "--filename", tmp_path],
+            capture_output=True,
+            timeout=30
+        )
+
+        if result.returncode != 0:
+            return jsonify({
+                "status": "error",
+                "message": f"Capture failed: {result.stderr.decode()}",
+                "port": cam_port
+            }), 500
+
+        # Read and encode as base64
+        with open(tmp_path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode("utf-8")
+
+        # Get camera info for response
+        camera_info = scanner_state.get("camera_info_map", {}).get(cam_port, {})
+
+        return jsonify({
+            "status": "ok",
+            "camera": camera,
+            "port": cam_port,
+            "serial": target_serial,
+            "model": camera_info.get("model"),
+            "image": f"data:image/jpeg;base64,{image_data}"
+        })
+
+    except subprocess.TimeoutExpired:
+        return jsonify({"status": "error", "message": "Capture timed out"}), 500
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        # Clean up temp file
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+@app.route("/api/camera-status")
+def api_camera_status():
+    """Get current camera status including ports, serials, and models."""
+    camera_info_map = scanner_state.get("camera_info_map", {})
+    left_port = scanner_state.get("left_cam_port")
+    right_port = scanner_state.get("right_cam_port")
+
+    left_info = camera_info_map.get(left_port, {})
+    right_info = camera_info_map.get(right_port, {})
+
+    return jsonify({
+        "left": {
+            "port": left_port,
+            "serial": scanner_state.get("left_cam_serial"),
+            "model": left_info.get("model"),
+            "manufacturer": left_info.get("manufacturer"),
+            "battery": scanner_state.get("left_cam_battery")
+        },
+        "right": {
+            "port": right_port,
+            "serial": scanner_state.get("right_cam_serial"),
+            "model": right_info.get("model"),
+            "manufacturer": right_info.get("manufacturer"),
+            "battery": scanner_state.get("right_cam_battery")
+        }
+    })
+
+
+# Camera settings we want to expose in the UI
+CAMERA_SETTINGS = [
+    # Image settings
+    {"path": "/main/imgsettings/imageformat", "label": "Image Format", "category": "image"},
+    {"path": "/main/imgsettings/iso", "label": "ISO", "category": "image"},
+    {"path": "/main/imgsettings/whitebalance", "label": "White Balance", "category": "image"},
+    {"path": "/main/imgsettings/colortemperature", "label": "Color Temp", "category": "image"},
+    # Capture settings
+    {"path": "/main/capturesettings/autoexposuremode", "label": "Exposure Mode", "category": "capture"},
+    {"path": "/main/capturesettings/aperture", "label": "Aperture", "category": "capture"},
+    {"path": "/main/capturesettings/shutterspeed", "label": "Shutter Speed", "category": "capture"},
+    {"path": "/main/capturesettings/drivemode", "label": "Drive Mode", "category": "capture"},
+    {"path": "/main/capturesettings/focusmode", "label": "Focus Mode", "category": "capture"},
+    {"path": "/main/capturesettings/meteringmode", "label": "Metering", "category": "capture"},
+]
+
+
+def get_camera_config(port, config_path):
+    """Get a single config value and its choices from a camera."""
+    try:
+        result = subprocess.run(
+            [GPHOTO, "--port", port, "--get-config", config_path],
+            capture_output=True,
+            timeout=5
+        )
+        if result.returncode != 0:
+            return None
+
+        output = result.stdout.decode()
+        config = {"path": config_path, "current": None, "choices": [], "readonly": False, "type": None}
+
+        for line in output.split("\n"):
+            line = line.strip()
+            if line.startswith("Current:"):
+                config["current"] = line.split(":", 1)[1].strip()
+            elif line.startswith("Choice:"):
+                # Format: "Choice: 0 Value"
+                parts = line.split(" ", 2)
+                if len(parts) >= 3:
+                    config["choices"].append(parts[2])
+            elif line.startswith("Readonly:"):
+                config["readonly"] = line.split(":")[1].strip() == "1"
+            elif line.startswith("Type:"):
+                config["type"] = line.split(":")[1].strip()
+
+        return config
+    except Exception as e:
+        print(f"Error getting config {config_path} from {port}: {e}")
+        return None
+
+
+def set_camera_config(port, config_path, value):
+    """Set a config value on a camera."""
+    try:
+        result = subprocess.run(
+            [GPHOTO, "--port", port, "--set-config", f"{config_path}={value}"],
+            capture_output=True,
+            timeout=5
+        )
+        return result.returncode == 0, result.stderr.decode() if result.returncode != 0 else ""
+    except Exception as e:
+        return False, str(e)
+
+
+@app.route("/api/camera-settings")
+def api_get_camera_settings():
+    """Get current camera settings from both cameras for comparison."""
+    left_port = scanner_state.get("left_cam_port")
+    right_port = scanner_state.get("right_cam_port")
+
+    if not left_port and not right_port:
+        return jsonify({"status": "error", "message": "No cameras connected"}), 400
+
+    settings = []
+    for setting in CAMERA_SETTINGS:
+        setting_data = {
+            "path": setting["path"],
+            "label": setting["label"],
+            "category": setting["category"],
+            "left": None,
+            "right": None,
+            "choices": [],
+            "readonly": False,
+        }
+
+        # Get left camera config
+        if left_port:
+            left_config = get_camera_config(left_port, setting["path"])
+            if left_config:
+                setting_data["left"] = left_config.get("current")
+                setting_data["choices"] = left_config.get("choices", [])
+                setting_data["readonly"] = left_config.get("readonly", False)
+
+        # Get right camera config
+        if right_port:
+            right_config = get_camera_config(right_port, setting["path"])
+            if right_config:
+                setting_data["right"] = right_config.get("current")
+                # Merge choices from right camera if left didn't have any
+                if not setting_data["choices"] and right_config.get("choices"):
+                    setting_data["choices"] = right_config.get("choices", [])
+
+        # Flag if values don't match
+        setting_data["mismatch"] = (
+            setting_data["left"] is not None and
+            setting_data["right"] is not None and
+            setting_data["left"] != setting_data["right"]
+        )
+
+        settings.append(setting_data)
+
+    return jsonify({"status": "ok", "settings": settings})
+
+
+@app.route("/api/camera-settings", methods=["POST"])
+def api_set_camera_settings():
+    """Apply a setting to both cameras."""
+    data = request.get_json()
+    config_path = data.get("path")
+    value = data.get("value")
+
+    if not config_path or value is None:
+        return jsonify({"status": "error", "message": "Missing path or value"}), 400
+
+    left_port = scanner_state.get("left_cam_port")
+    right_port = scanner_state.get("right_cam_port")
+
+    results = {"left": None, "right": None}
+
+    # Apply to left camera
+    if left_port:
+        success, error = set_camera_config(left_port, config_path, value)
+        results["left"] = {"success": success, "error": error if not success else None}
+
+    # Apply to right camera
+    if right_port:
+        success, error = set_camera_config(right_port, config_path, value)
+        results["right"] = {"success": success, "error": error if not success else None}
+
+    # Check if both succeeded
+    all_success = all(r and r["success"] for r in results.values() if r)
+
+    return jsonify({
+        "status": "ok" if all_success else "partial",
+        "results": results,
+        "message": "Settings applied to both cameras" if all_success else "Some settings failed"
+    })
+
+
 @app.route("/api/crop-settings", methods=["GET", "POST"])
 def api_crop_settings():
     """Get or save crop settings for a session."""

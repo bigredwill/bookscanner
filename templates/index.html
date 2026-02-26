@@ -39,10 +39,19 @@
                 <button onclick="toggleSessionBrowser()" class="small-btn">
                     Sessions
                 </button>
+                <button
+                    onclick="toggleSettings()"
+                    class="small-btn settings-btn"
+                >
+                    Settings
+                </button>
             </div>
             <div class="header-row actions-row">
                 <button onclick="triggerCapture()" class="capture-btn">
                     Capture (b)
+                </button>
+                <button onclick="togglePreview()" class="preview-toggle-btn">
+                    Preview
                 </button>
                 <a href="/crop" class="crop-link">Crop</a>
                 <input
@@ -65,6 +74,119 @@
                 <button onclick="toggleSessionBrowser()">Close</button>
             </div>
             <div class="session-list" id="session-list">Loading...</div>
+        </div>
+
+        <div class="settings-panel" id="settings-panel" style="display: none">
+            <div class="settings-header">
+                <h3>Camera Settings</h3>
+                <span class="settings-note">Mismatches highlighted in red</span>
+                <button onclick="loadCameraSettings()" class="small-btn">
+                    Refresh
+                </button>
+                <button onclick="toggleSettings()" class="small-btn">
+                    Close
+                </button>
+            </div>
+            <div class="settings-content">
+                <div class="settings-loading" id="settings-loading">
+                    Loading settings...
+                </div>
+                <div
+                    class="settings-table-container"
+                    id="settings-table-container"
+                    style="display: none"
+                >
+                    <table class="settings-table">
+                        <thead>
+                            <tr>
+                                <th>Setting</th>
+                                <th>LEFT</th>
+                                <th>RIGHT</th>
+                                <th>Set Both</th>
+                            </tr>
+                        </thead>
+                        <tbody id="settings-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="preview-section" id="preview-section" style="display: none">
+            <div class="preview-header">
+                <h3>Camera Preview</h3>
+                <button onclick="togglePreview()" class="small-btn">
+                    Hide
+                </button>
+            </div>
+            <div class="preview-container">
+                <div class="preview-camera" id="preview-left">
+                    <div class="preview-label">
+                        <span class="camera-side">LEFT</span>
+                        <span class="camera-details" id="preview-left-info"
+                            >-</span
+                        >
+                    </div>
+                    <div class="preview-image-container">
+                        <img
+                            id="preview-left-img"
+                            src=""
+                            alt="Left camera preview"
+                            style="display: none"
+                        />
+                        <div
+                            class="preview-placeholder"
+                            id="preview-left-placeholder"
+                        >
+                            No preview
+                        </div>
+                    </div>
+                    <button
+                        onclick="capturePreview('left')"
+                        id="preview-left-btn"
+                        class="preview-btn"
+                    >
+                        Preview
+                    </button>
+                </div>
+                <div class="preview-camera" id="preview-right">
+                    <div class="preview-label">
+                        <span class="camera-side">RIGHT</span>
+                        <span class="camera-details" id="preview-right-info"
+                            >-</span
+                        >
+                    </div>
+                    <div class="preview-image-container">
+                        <img
+                            id="preview-right-img"
+                            src=""
+                            alt="Right camera preview"
+                            style="display: none"
+                        />
+                        <div
+                            class="preview-placeholder"
+                            id="preview-right-placeholder"
+                        >
+                            No preview
+                        </div>
+                    </div>
+                    <button
+                        onclick="capturePreview('right')"
+                        id="preview-right-btn"
+                        class="preview-btn"
+                    >
+                        Preview
+                    </button>
+                </div>
+            </div>
+            <div class="preview-actions">
+                <button
+                    onclick="capturePreviewBoth()"
+                    id="preview-both-btn"
+                    class="preview-btn-both"
+                >
+                    Preview Both
+                </button>
+            </div>
         </div>
 
         <div class="gallery" id="gallery"></div>

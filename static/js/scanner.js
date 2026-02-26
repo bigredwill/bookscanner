@@ -317,9 +317,244 @@ function querySerials() {
     });
 }
 
+// Settings functionality
+function toggleSettings() {
+  let panel = document.getElementById("settings-panel");
+  if (panel.style.display === "none") {
+    panel.style.display = "block";
+    loadCameraSettings();
+  } else {
+    panel.style.display = "none";
+  }
+}
+
+function loadCameraSettings() {
+  let loading = document.getElementById("settings-loading");
+  let tableContainer = document.getElementById("settings-table-container");
+
+  loading.style.display = "block";
+  loading.textContent = "Loading settings...";
+  tableContainer.style.display = "none";
+
+  fetch("/api/camera-settings")
+    .then((r) => r.json())
+    .then((data) => {
+      if (data.status === "ok") {
+        renderSettings(data.settings);
+        loading.style.display = "none";
+        tableContainer.style.display = "block";
+      } else {
+        loading.textContent = `Error: ${data.message}`;
+      }
+    })
+    .catch((e) => {
+      console.log("Error loading camera settings:", e);
+      loading.textContent = "Failed to load settings";
+    });
+}
+
+function renderSettings(settings) {
+  let tbody = document.getElementById("settings-tbody");
+  tbody.innerHTML = "";
+
+  for (let setting of settings) {
+    let row = buildSettingRow(setting);
+    tbody.innerHTML += row;
+  }
+}
+
+function buildSettingRow(setting) {
+  let disabled = setting.readonly ? "disabled" : "";
+  let mismatchClass = setting.mismatch ? "mismatch" : "";
+  let selectId = `setting-${setting.path.replace(/\//g, "-")}`;
+
+  // Build options for the "Set Both" dropdown
+  let optionsHTML = "";
+  if (setting.choices && setting.choices.length > 0) {
+    optionsHTML = `<option value="">-- Select --</option>`;
+    for (let choice of setting.choices) {
+      optionsHTML += `<option value="${escapeHtml(choice)}">${escapeHtml(choice)}</option>`;
+    }
+  } else {
+    optionsHTML = `<option value="">N/A</option>`;
+  }
+
+  // Display values for left and right
+  let leftValue = setting.left !== null ? setting.left : "-";
+  let rightValue = setting.right !== null ? setting.right : "-";
+
+  return `
+    <tr class="${mismatchClass}">
+      <td class="setting-label">${escapeHtml(setting.label)}</td>
+      <td class="setting-value ${setting.mismatch ? "mismatch-cell" : ""}">${escapeHtml(leftValue)}</td>
+      <td class="setting-value ${setting.mismatch ? "mismatch-cell" : ""}">${escapeHtml(rightValue)}</td>
+      <td class="setting-control">
+        <select id="${selectId}"
+                data-path="${escapeHtml(setting.path)}"
+                onchange="applySetting(this)"
+                ${disabled}>
+          ${optionsHTML}
+        </select>
+      </td>
+    </tr>
+  `;
+}
+
+function escapeHtml(text) {
+  if (text === null || text === undefined) return "";
+  let div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function applySetting(selectEl) {
+  let path = selectEl.dataset.path;
+  let value = selectEl.value;
+
+  selectEl.disabled = true;
+  selectEl.style.opacity = "0.5";
+
+  fetch("/api/camera-settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: path, value: value }),
+  })
+    .then((r) => r.json())
+    .then((data) => {
+      selectEl.disabled = false;
+      selectEl.style.opacity = "1";
+
+      if (data.status === "ok") {
+        // Flash green briefly
+        selectEl.style.backgroundColor = "#d4edda";
+        setTimeout(() => {
+          selectEl.style.backgroundColor = "";
+        }, 500);
+      } else {
+        // Flash red and show error
+        selectEl.style.backgroundColor = "#f8d7da";
+        console.log("Setting error:", data);
+        setTimeout(() => {
+          selectEl.style.backgroundColor = "";
+        }, 1000);
+      }
+
+      // Reload settings to get updated values (some settings affect others)
+      setTimeout(() => loadCameraSettings(), 600);
+    })
+    .catch((e) => {
+      console.log("Error applying setting:", e);
+      selectEl.disabled = false;
+      selectEl.style.opacity = "1";
+      selectEl.style.backgroundColor = "#f8d7da";
+      setTimeout(() => {
+        selectEl.style.backgroundColor = "";
+      }, 1000);
+    });
+}
+
+// Preview functionality
+function togglePreview() {
+  let section = document.getElementById("preview-section");
+  if (section.style.display === "none") {
+    section.style.display = "block";
+    updateCameraStatus();
+  } else {
+    section.style.display = "none";
+  }
+}
+
+function updateCameraStatus() {
+  fetch("/api/camera-status")
+    .then((r) => r.json())
+    .then((data) => {
+      // Update left camera info
+      let leftInfo = "";
+      if (data.left.serial) {
+        leftInfo = data.left.serial;
+        if (data.left.model) {
+          leftInfo += ` (${data.left.model})`;
+        }
+      }
+      document.getElementById("preview-left-info").textContent =
+        leftInfo || "Not detected";
+
+      // Update right camera info
+      let rightInfo = "";
+      if (data.right.serial) {
+        rightInfo = data.right.serial;
+        if (data.right.model) {
+          rightInfo += ` (${data.right.model})`;
+        }
+      }
+      document.getElementById("preview-right-info").textContent =
+        rightInfo || "Not detected";
+    })
+    .catch((e) => console.log("Error fetching camera status:", e));
+}
+
+function capturePreview(camera) {
+  let btn = document.getElementById(`preview-${camera}-btn`);
+  let img = document.getElementById(`preview-${camera}-img`);
+  let placeholder = document.getElementById(`preview-${camera}-placeholder`);
+
+  btn.disabled = true;
+  btn.textContent = "Capturing...";
+  placeholder.textContent = "Capturing...";
+
+  fetch(`/api/preview/${camera}`)
+    .then((r) => r.json())
+    .then((data) => {
+      if (data.status === "ok") {
+        img.src = data.image;
+        img.style.display = "block";
+        placeholder.style.display = "none";
+
+        // Update the camera info with response data
+        let infoEl = document.getElementById(`preview-${camera}-info`);
+        let info = data.serial || "";
+        if (data.model) {
+          info += ` (${data.model})`;
+        }
+        infoEl.textContent = info || "Unknown";
+
+        btn.textContent = "Refresh";
+      } else {
+        placeholder.textContent = `Error: ${data.message}`;
+        placeholder.style.display = "block";
+        img.style.display = "none";
+        btn.textContent = "Retry";
+      }
+      btn.disabled = false;
+    })
+    .catch((e) => {
+      console.log(`Error capturing ${camera} preview:`, e);
+      placeholder.textContent = "Capture failed";
+      placeholder.style.display = "block";
+      img.style.display = "none";
+      btn.disabled = false;
+      btn.textContent = "Retry";
+    });
+}
+
+function capturePreviewBoth() {
+  let btn = document.getElementById("preview-both-btn");
+  btn.disabled = true;
+  btn.textContent = "Capturing...";
+
+  // Capture both cameras sequentially to avoid USB conflicts
+  capturePreview("left");
+  setTimeout(() => {
+    capturePreview("right");
+    btn.disabled = false;
+    btn.textContent = "Preview Both";
+  }, 2000); // Wait 2 seconds between captures
+}
+
 // Initial load and periodic refresh
 updateGallery();
 updateDiskUsage();
 loadNotes();
+updateCameraStatus();
 setInterval(updateGallery, 5000);
 setInterval(updateDiskUsage, 30000); // Disk usage every 30 seconds
